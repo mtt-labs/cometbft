@@ -49,16 +49,15 @@ type CListMempool struct {
 	recheck *recheck
 
 	// Data in the following variables must to be kept in sync and updated atomically.
-	txsMtx   cmtsync.RWMutex
-	lanes    map[types.Lane]*clist.CList     // each lane is a linked-list of (valid) txs
-	txsMap   map[types.TxKey]*clist.CElement // for quick access to the mempool entry of a given tx
-	txsBytes int64                           // total size of mempool, in bytes
-	numTxs   int64                           // total number of txs in the mempool
+	txsMtx        cmtsync.RWMutex
+	lanes         map[types.Lane]*clist.CList     // each lane is a linked-list of (valid) txs
+	txsMap        map[types.TxKey]*clist.CElement // for quick access to the mempool entry of a given tx
+	txsBytes      int64                           // total size of mempool, in bytes
+	numTxs        int64                           // total number of txs in the mempool
+	addTxSeq      int64                           // number of total added txs
+	addTxLaneSeqs map[types.Lane]int64            // latest sequential number for each lane
 
-	addTxChMtx    cmtsync.RWMutex // Protects the fields below
-	addTxCh       chan struct{}   // Blocks until the next TX is added
-	addTxSeq      int64
-	addTxLaneSeqs map[types.Lane]int64
+	addTxCh chan struct{} // For blocking until the next tx is added
 
 	// Immutable fields, only set during initialization.
 	defaultLane types.Lane
@@ -90,11 +89,11 @@ func NewCListMempool(
 		config:        cfg,
 		proxyAppConn:  proxyAppConn,
 		txsMap:        make(map[types.TxKey]*clist.CElement),
+		addTxCh:       make(chan struct{}),
+		addTxLaneSeqs: make(map[types.Lane]int64),
 		recheck:       &recheck{},
 		logger:        log.NewNopLogger(),
 		metrics:       NopMetrics(),
-		addTxCh:       make(chan struct{}),
-		addTxLaneSeqs: make(map[types.Lane]int64),
 	}
 	mp.height.Store(height)
 
@@ -386,8 +385,8 @@ func (mem *CListMempool) handleCheckTxResponse(tx types.Tx, sender p2p.ID) func(
 
 		// If the app returned a (non-zero) lane, use it; otherwise use the default lane.
 		lane := mem.defaultLane
-		if l := types.Lane(res.Lane); l != 0 {
-			lane = l
+		if res.Lane != 0 {
+			lane = types.Lane(res.Lane)
 		}
 
 		// Check that tx is not already in the mempool. This can happen when the
@@ -443,8 +442,6 @@ func (mem *CListMempool) addTx(memTx *mempoolTx, sender p2p.ID, lane types.Lane)
 		return false
 	}
 
-	mem.addTxChMtx.Lock()
-	defer mem.addTxChMtx.Unlock()
 	mem.addTxSeq++
 	memTx.seq = mem.addTxSeq
 
@@ -477,6 +474,19 @@ func (mem *CListMempool) addTx(memTx *mempoolTx, sender p2p.ID, lane types.Lane)
 	)
 
 	return true
+}
+
+// TODO: rename.
+func (mem *CListMempool) checkAddTx(seq int64, lane types.Lane) bool {
+	mem.txsMtx.RLock()
+	defer mem.txsMtx.RUnlock()
+	return seq == mem.addTxLaneSeqs[lane]
+}
+
+func (mem *CListMempool) newTxCh() <-chan struct{} {
+	mem.txsMtx.RLock()
+	defer mem.txsMtx.RUnlock()
+	return mem.addTxCh
 }
 
 // RemoveTxByKey removes a transaction from the mempool by its TxKey index.
@@ -920,7 +930,7 @@ type CListIterator struct {
 	cursors          map[types.Lane]*clist.CElement // last accessed entries on each lane
 }
 
-func (mem *CListMempool) NewIterator() Iterator {
+func (mem *CListMempool) NewIterator() *CListIterator {
 	return &CListIterator{
 		mp:       mem,
 		counters: make(map[types.Lane]uint32, len(mem.sortedLanes)),
@@ -937,7 +947,8 @@ func (iter *CListIterator) WaitNextCh() <-chan Entry {
 	ch := make(chan Entry)
 	go func() {
 		// Add the next entry to the channel if not nil.
-		if entry := iter.Next(); entry != nil {
+		lane := iter.pickLane()
+		if entry := iter.next(lane); entry != nil {
 			ch <- entry.Value.(Entry)
 			close(ch)
 		} else {
@@ -948,69 +959,71 @@ func (iter *CListIterator) WaitNextCh() <-chan Entry {
 	return ch
 }
 
-// PickLane returns a _valid_ lane on which to iterate, according to the WRR algorithm. A lane is
+func (iter *CListIterator) nextLane() types.Lane {
+	iter.currentLaneIndex = (iter.currentLaneIndex + 1) % len(iter.mp.sortedLanes)
+	return iter.mp.sortedLanes[iter.currentLaneIndex]
+}
+
+// pickLane and next implement the classical Weighted Round Robin (WRR) algorithm.
+//
+// pickLane returns a _valid_ lane on which to select the next element, according to the WRR algorithm. A lane is
 // valid if it is not empty or the number of accessed entries in the lane has not yet reached its
 // priority value.
-func (iter *CListIterator) PickLane() types.Lane {
-	// Loop until finding a valid lanes
-	// If the current lane is not valid, continue with the next lane with lower priority, in a
-	// round robin fashion.
-	lane := iter.mp.sortedLanes[iter.currentLaneIndex]
-
-	iter.mp.addTxChMtx.RLock()
-	defer iter.mp.addTxChMtx.RUnlock()
-
+func (iter *CListIterator) pickLane() types.Lane {
+	// Iterate over lanes in priority-descending order, in round robin fashion,
+	// until finding a valid lane.
+	lane := iter.mp.sortedLanes[iter.currentLaneIndex] // first lane is the last picked lane, if any
 	nIter := 0
 	for {
+		// Skip lane if it's empty or its cursor is pointing to the last added
+		// entry in the lane (meaning that the entry was picked in the last
+		// iteration).
 		if iter.mp.lanes[lane].Len() == 0 ||
-			(iter.cursors[lane] != nil &&
-				iter.cursors[lane].Value.(*mempoolTx).seq == iter.mp.addTxLaneSeqs[lane]) {
+			(iter.cursors[lane] != nil && iter.mp.checkAddTx(iter.cursors[lane].Value.(*mempoolTx).seq, lane)) {
 			prevLane := lane
-			iter.currentLaneIndex = (iter.currentLaneIndex + 1) % len(iter.mp.sortedLanes)
-			lane = iter.mp.sortedLanes[iter.currentLaneIndex]
+			lane = iter.nextLane()
 			nIter++
-			if nIter >= len(iter.mp.sortedLanes) {
-				ch := iter.mp.addTxCh
-				iter.mp.addTxChMtx.RUnlock()
+			// If we have iterated over all lanes, block on the channel until a new entry is added.
+			if nIter >= len(iter.mp.lanes) {
 				iter.mp.logger.Info("YYY PickLane, bef block", "lane", lane, "prevLane", prevLane)
-				<-ch
+				<-iter.mp.newTxCh()
 				iter.mp.logger.Info("YYY PickLane, aft block", "lane", lane, "prevLane", prevLane)
-				iter.mp.addTxChMtx.RLock()
 				nIter = 0
 			}
 			iter.mp.logger.Info("YYY PickLane, skipped lane 1", "prevLane", prevLane, "lane", lane)
 			continue
 		}
 
+		// The lane has entries. Skip it if we have picked more entries than allowed by its priority.
 		if iter.counters[lane] >= uint32(lane) {
-			// Reset the counter only when the limit on the lane was reached.
+			// Reset counter.
+
+			// TODO: Note that if no other lanes has entries, this lane will be picked above its
+
 			iter.counters[lane] = 0
-			iter.currentLaneIndex = (iter.currentLaneIndex + 1) % len(iter.mp.sortedLanes)
 			prevLane := lane
-			lane = iter.mp.sortedLanes[iter.currentLaneIndex]
+			lane = iter.nextLane()
 			nIter = 0
-			iter.mp.logger.Info("YYY PickLane, skipped lane 2", "lane", prevLane, "new Lane ", lane)
+			iter.mp.logger.Debug("YYY PickLane, skipped lane 2", "lane", prevLane, "new Lane ", lane)
 			continue
 		}
 		// TODO: if we detect that a higher-priority lane now has entries, do we preempt access to the current lane?
-		iter.mp.logger.Info("YYY PickLane, returned lane", "lane", lane)
+		iter.mp.logger.Debug("YYY PickLane, returned lane", "lane", lane)
 		return lane
 	}
 }
 
-// Next implements the classical Weighted Round Robin (WRR) algorithm.
+// next returns the next element in the given lane that comes after the last one returned.
 //
-// In classical WRR, the iterator cycles over the lanes. When a lane is selected, Next returns an
-// entry from the selected lane. On subsequent calls, Next will return the next entries from the
+// In classical WRR, the iterator cycles over the lanes. When a lane is selected, next returns an
+// entry from the selected lane. On subsequent calls, next will return the next entries from the
 // same lane until `lane` entries are accessed or the lane is empty, where `lane` is the priority.
-// The next time, Next will select the successive lane with lower priority.
+// The next time, next will select the successive lane with lower priority.
 //
 // TODO: Note that this code does not block waiting for an available entry on a CList or a CElement, as
 // was the case on the original code. Is this the best way to do it?
-func (iter *CListIterator) Next() *clist.CElement {
-	lane := iter.PickLane()
+func (iter *CListIterator) next(lane types.Lane) (next *clist.CElement) {
 	// Load the last accessed entry in the lane and set the next one.
-	var next *clist.CElement
 	if cursor := iter.cursors[lane]; cursor != nil {
 		// If the current entry is the last one or was removed, Next will return nil.
 		// Note we don't need to wait until the next entry is available (with <-cursor.NextWaitChan()).
