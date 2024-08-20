@@ -49,15 +49,14 @@ type CListMempool struct {
 	recheck *recheck
 
 	// Data in the following variables must to be kept in sync and updated atomically.
-	txsMtx        cmtsync.RWMutex
-	lanes         map[types.Lane]*clist.CList     // each lane is a linked-list of (valid) txs
-	txsMap        map[types.TxKey]*clist.CElement // for quick access to the mempool entry of a given tx
-	txsBytes      int64                           // total size of mempool, in bytes
-	numTxs        int64                           // total number of txs in the mempool
-	addTxSeq      int64                           // number of total added txs
-	addTxLaneSeqs map[types.Lane]int64            // latest sequential number for each lane
-
-	addTxCh chan struct{} // For blocking until the next tx is added
+	txsMtx       cmtsync.RWMutex
+	lanes        map[types.Lane]*clist.CList     // each lane is a linked-list of (valid) txs
+	txsMap       map[types.TxKey]*clist.CElement // for quick access to the mempool entry of a given tx
+	txsBytes     int64                           // total size of mempool, in bytes
+	numTxs       int64                           // total number of txs currently in the mempool
+	numAddedTxs  int64                           // total number of added txs to the mempool
+	lanesSeqNums map[types.Lane]int64            // latest sequential number for each lane
+	addTxCh      chan struct{}                   // for blocking until the next tx is added
 
 	// Immutable fields, only set during initialization.
 	defaultLane types.Lane
@@ -86,14 +85,14 @@ func NewCListMempool(
 	options ...CListMempoolOption,
 ) *CListMempool {
 	mp := &CListMempool{
-		config:        cfg,
-		proxyAppConn:  proxyAppConn,
-		txsMap:        make(map[types.TxKey]*clist.CElement),
-		addTxCh:       make(chan struct{}),
-		addTxLaneSeqs: make(map[types.Lane]int64),
-		recheck:       &recheck{},
-		logger:        log.NewNopLogger(),
-		metrics:       NopMetrics(),
+		config:       cfg,
+		proxyAppConn: proxyAppConn,
+		txsMap:       make(map[types.TxKey]*clist.CElement),
+		addTxCh:      make(chan struct{}),
+		lanesSeqNums: make(map[types.Lane]int64),
+		recheck:      &recheck{},
+		logger:       log.NewNopLogger(),
+		metrics:      NopMetrics(),
 	}
 	mp.height.Store(height)
 
@@ -407,12 +406,7 @@ func (mem *CListMempool) handleCheckTxResponse(tx types.Tx, sender p2p.ID) func(
 		}
 
 		// Add tx to mempool and notify that new txs are available.
-		memTx := mempoolTx{
-			height:    mem.height.Load(),
-			gasWanted: res.GasWanted,
-			tx:        tx,
-		}
-		if mem.addTx(&memTx, sender, lane) {
+		if mem.addTx(tx, res.GasWanted, sender, lane) {
 			mem.notifyTxsAvailable()
 
 			if mem.onNewTx != nil {
@@ -428,11 +422,10 @@ func (mem *CListMempool) handleCheckTxResponse(tx types.Tx, sender p2p.ID) func(
 
 // Called from:
 //   - handleCheckTxResponse (lock not held) if tx is valid
-func (mem *CListMempool) addTx(memTx *mempoolTx, sender p2p.ID, lane types.Lane) bool {
+func (mem *CListMempool) addTx(tx types.Tx, gasWanted int64, sender p2p.ID, lane types.Lane) bool {
 	mem.txsMtx.Lock()
 	defer mem.txsMtx.Unlock()
 
-	tx := memTx.tx
 	txKey := tx.Key()
 
 	// Get lane's clist.
@@ -442,14 +435,19 @@ func (mem *CListMempool) addTx(memTx *mempoolTx, sender p2p.ID, lane types.Lane)
 		return false
 	}
 
-	mem.addTxSeq++
-	memTx.seq = mem.addTxSeq
+	mem.numAddedTxs++
 
-	// Add new transaction.
+	// Add new entry.
+	memTx := &mempoolTx{
+		height:    mem.height.Load(),
+		gasWanted: gasWanted,
+		tx:        tx,
+		lane:      lane,
+		seq:       mem.numAddedTxs,
+	}
 	_ = memTx.addSender(sender)
-	memTx.lane = lane
 	e := txs.PushBack(memTx)
-	mem.addTxLaneSeqs[lane] = mem.addTxSeq
+	mem.lanesSeqNums[lane] = mem.numAddedTxs
 
 	// Update auxiliary variables.
 	mem.txsMap[txKey] = e
@@ -476,11 +474,16 @@ func (mem *CListMempool) addTx(memTx *mempoolTx, sender p2p.ID, lane types.Lane)
 	return true
 }
 
-// TODO: rename.
-func (mem *CListMempool) checkAddTx(seq int64, lane types.Lane) bool {
+// isLastEntryInLane returns true iff the given entry is the last entry added to
+// the lane.
+func (mem *CListMempool) isLastEntryInLane(elem *clist.CElement, lane types.Lane) bool {
+	if elem == nil {
+		return false
+	}
+
 	mem.txsMtx.RLock()
 	defer mem.txsMtx.RUnlock()
-	return seq == mem.addTxLaneSeqs[lane]
+	return elem.Value.(*mempoolTx).seq == mem.lanesSeqNums[lane]
 }
 
 func (mem *CListMempool) newTxCh() <-chan struct{} {
@@ -924,10 +927,10 @@ func (rc *recheck) consideredFull() bool {
 // CListIterator implements an Iterator that traverses the lanes with the classical Weighted Round
 // Robin (WRR) algorithm.
 type CListIterator struct {
-	mp               *CListMempool                  // to wait on and retrieve the first entry
-	currentLaneIndex int                            // current lane being iterated; index on mp.sortedLanes
-	counters         map[types.Lane]uint32          // counters of accessed entries for WRR algorithm
-	cursors          map[types.Lane]*clist.CElement // last accessed entries on each lane
+	mp        *CListMempool                  // to wait on and retrieve the first entry
+	laneIndex int                            // current lane being iterated; index on mp.sortedLanes
+	counters  map[types.Lane]uint32          // counters of accessed entries for WRR algorithm
+	cursors   map[types.Lane]*clist.CElement // last accessed entries on each lane
 }
 
 func (mem *CListMempool) NewIterator() *CListIterator {
@@ -960,8 +963,8 @@ func (iter *CListIterator) WaitNextCh() <-chan Entry {
 }
 
 func (iter *CListIterator) nextLane() types.Lane {
-	iter.currentLaneIndex = (iter.currentLaneIndex + 1) % len(iter.mp.sortedLanes)
-	return iter.mp.sortedLanes[iter.currentLaneIndex]
+	iter.laneIndex = (iter.laneIndex + 1) % len(iter.mp.lanes)
+	return iter.mp.sortedLanes[iter.laneIndex]
 }
 
 // pickLane and next implement the classical Weighted Round Robin (WRR) algorithm.
@@ -972,39 +975,35 @@ func (iter *CListIterator) nextLane() types.Lane {
 func (iter *CListIterator) pickLane() types.Lane {
 	// Iterate over lanes in priority-descending order, in round robin fashion,
 	// until finding a valid lane.
-	lane := iter.mp.sortedLanes[iter.currentLaneIndex] // first lane is the last picked lane, if any
-	nIter := 0
+	lane := iter.mp.sortedLanes[iter.laneIndex] // first lane is the last picked lane, if any
+	numEmptyLanes := 0
 	for {
 		// Skip lane if it's empty or its cursor is pointing to the last added
 		// entry in the lane (meaning that the entry was picked in the last
 		// iteration).
-		if iter.mp.lanes[lane].Len() == 0 ||
-			(iter.cursors[lane] != nil && iter.mp.checkAddTx(iter.cursors[lane].Value.(*mempoolTx).seq, lane)) {
-			prevLane := lane
-			lane = iter.nextLane()
-			nIter++
-			// If we have iterated over all lanes, block on the channel until a new entry is added.
-			if nIter >= len(iter.mp.lanes) {
-				iter.mp.logger.Info("YYY PickLane, bef block", "lane", lane, "prevLane", prevLane)
-				<-iter.mp.newTxCh()
-				iter.mp.logger.Info("YYY PickLane, aft block", "lane", lane, "prevLane", prevLane)
-				nIter = 0
+		if iter.mp.lanes[lane].Len() == 0 || iter.mp.isLastEntryInLane(iter.cursors[lane], lane) {
+			numEmptyLanes++
+			// If all lanes are empty, block on the channel until a new entry is added.
+			if numEmptyLanes >= len(iter.mp.lanes) {
+				ch := iter.mp.newTxCh()
+				iter.mp.logger.Debug("ZZZ PickLane, bef block", "lane", lane)
+				<-ch
+				iter.mp.logger.Debug("ZZZ PickLane, aft block", "lane", lane)
+				numEmptyLanes = 0
 			}
-			iter.mp.logger.Info("YYY PickLane, skipped lane 1", "prevLane", prevLane, "lane", lane)
+			iter.mp.logger.Debug("YYY PickLane, skip empty lane", "lane", lane)
+			lane = iter.nextLane()
 			continue
 		}
 
 		// The lane has entries. Skip it if we have picked more entries than allowed by its priority.
 		if iter.counters[lane] >= uint32(lane) {
-			// Reset counter.
-
-			// TODO: Note that if no other lanes has entries, this lane will be picked above its
-
+			// Reset counters.
 			iter.counters[lane] = 0
-			prevLane := lane
+			numEmptyLanes = 0
+
+			iter.mp.logger.Debug("YYY PickLane, skip over-consumed lane", "lane ", lane)
 			lane = iter.nextLane()
-			nIter = 0
-			iter.mp.logger.Debug("YYY PickLane, skipped lane 2", "lane", prevLane, "new Lane ", lane)
 			continue
 		}
 		// TODO: if we detect that a higher-priority lane now has entries, do we preempt access to the current lane?
