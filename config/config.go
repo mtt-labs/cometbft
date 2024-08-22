@@ -1002,7 +1002,7 @@ func DefaultMempoolConfig() *MempoolConfig {
 		Broadcast:      true,
 		// Each signature verification takes .5ms, Size reduced until we implement
 		// ABCI Recheck
-		Size:        4000,
+		Size:        5000,
 		MaxTxBytes:  1024 * 1024,      // 1MiB
 		MaxTxsBytes: 64 * 1024 * 1024, // 64MiB, enough to fill 16 blocks of 4 MiB
 		CacheSize:   150000,
@@ -1216,7 +1216,7 @@ type ConsensusConfig struct {
 func DefaultConsensusConfig() *ConsensusConfig {
 	return &ConsensusConfig{
 		WalPath:                          filepath.Join(DefaultDataDir, "cs.wal", "wal"),
-		TimeoutPropose:                   10000 * time.Millisecond,
+		TimeoutPropose:                   3000 * time.Millisecond,
 		TimeoutProposeDelta:              500 * time.Millisecond,
 		TimeoutVote:                      1000 * time.Millisecond,
 		TimeoutVoteDelta:                 500 * time.Millisecond,

@@ -15,7 +15,6 @@ import (
 	"github.com/cometbft/cometbft/libs/log"
 	"github.com/cometbft/cometbft/p2p"
 	"github.com/cometbft/cometbft/types"
-	cmttime "github.com/cometbft/cometbft/types/time"
 )
 
 // Reactor handles mempool tx broadcasting amongst peers.
@@ -151,14 +150,9 @@ func (memR *Reactor) Receive(e p2p.Envelope) {
 			return
 		}
 
-		start := cmttime.Now()
 		for _, txBytes := range protoTxs {
-			go func(tx []byte, peer p2p.Peer) {
-				_, _ = memR.TryAddTx(types.Tx(tx), peer)
-			}(txBytes, e.Src)
+			_, _ = memR.TryAddTx(types.Tx(txBytes), e.Src)
 		}
-		memR.mempool.metrics.ReceiveDelay.
-			Set(cmttime.Since(start).Seconds())
 
 	default:
 		memR.Logger.Error("unknown message type", "src", e.Src, "chId", e.ChannelID, "msg", e.Message)

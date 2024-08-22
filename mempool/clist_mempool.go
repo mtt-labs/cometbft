@@ -17,7 +17,6 @@ import (
 	"github.com/cometbft/cometbft/p2p"
 	"github.com/cometbft/cometbft/proxy"
 	"github.com/cometbft/cometbft/types"
-	cmttime "github.com/cometbft/cometbft/types/time"
 )
 
 const noSender = p2p.ID("")
@@ -492,7 +491,7 @@ func (mem *CListMempool) handleRecheckTxResponse(tx types.Tx) func(res *abci.Res
 		}
 
 		// If tx is invalid, remove it from the mempool and the cache.
-		if (res.Code != abci.CodeTypeOK) || postCheckErr != nil || true {
+		if (res.Code != abci.CodeTypeOK) || postCheckErr != nil {
 			// Tx became invalidated due to newly committed block.
 			mem.logger.Debug("tx is no longer valid", "tx", tx.Hash(), "res", res, "postCheckErr", postCheckErr)
 			if err := mem.RemoveTxByKey(tx.Key()); err != nil {
@@ -562,9 +561,6 @@ func (mem *CListMempool) ReapMaxBytesMaxGas(maxBytes, maxGas int64) types.Txs {
 			return txs[:len(txs)-1]
 		}
 		totalGas = newTotalGas
-		if len(txs) > 10 {
-			break
-		}
 	}
 	return txs
 }
@@ -646,9 +642,7 @@ func (mem *CListMempool) Update(
 
 	// Recheck txs left in the mempool to remove them if they became invalid in the new state.
 	if mem.config.Recheck {
-		start := cmttime.Now()
 		mem.recheckTxs()
-		mem.metrics.RecheckDelay.Set(cmttime.Since(start).Seconds())
 	}
 
 	// Notify if there are still txs left in the mempool.
