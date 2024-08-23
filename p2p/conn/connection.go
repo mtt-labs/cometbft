@@ -17,7 +17,6 @@ import (
 	tmp2p "github.com/cometbft/cometbft/api/cometbft/p2p/v1"
 	"github.com/cometbft/cometbft/config"
 	flow "github.com/cometbft/cometbft/internal/flowrate"
-	"github.com/cometbft/cometbft/internal/timer"
 	"github.com/cometbft/cometbft/libs/log"
 	"github.com/cometbft/cometbft/libs/protoio"
 	"github.com/cometbft/cometbft/libs/service"
@@ -106,8 +105,8 @@ type MConnection struct {
 	// are safe to call concurrently.
 	stopMtx cmtsync.Mutex
 
-	flushTimer *timer.ThrottleTimer // flush writes as necessary but throttled.
-	pingTimer  *time.Ticker         // send pings periodically
+	flushTimer *time.Timer  // flush writes as necessary but throttled.
+	pingTimer  *time.Ticker // send pings periodically
 
 	// close conn if pong is not received in pongTimeout
 	pongTimer     *time.Timer
@@ -227,7 +226,7 @@ func (c *MConnection) OnStart() error {
 	if err := c.BaseService.OnStart(); err != nil {
 		return err
 	}
-	c.flushTimer = timer.NewThrottleTimer("flush", c.config.FlushThrottle)
+	c.flushTimer = time.NewTimer(0)
 	c.pingTimer = time.NewTicker(c.config.PingInterval)
 	c.pongTimeoutCh = make(chan bool, 1)
 	c.chStatsTimer = time.NewTicker(updateStats)
@@ -437,9 +436,7 @@ FOR_LOOP:
 		var err error
 	SELECTION:
 		select {
-		case <-c.flushTimer.Ch:
-			// NOTE: flushTimer.Set() must be called every time
-			// something is written to .bufConnWriter.
+		case <-c.flushTimer.C:
 			c.flush()
 		case <-c.chStatsTimer.C:
 			for _, channel := range c.channels {
@@ -579,7 +576,7 @@ func (c *MConnection) sendPacketMsgOnChannel(w protoio.Writer, sendChannel *Chan
 		return n, true
 	}
 	// TODO: Change this to only add flush signals at the start and end of the batch.
-	c.flushTimer.Set()
+	c.flushTimer.Reset(c.config.FlushThrottle)
 	return n, false
 }
 
