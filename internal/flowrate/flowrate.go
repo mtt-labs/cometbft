@@ -274,9 +274,10 @@ func (m *Monitor) waitNextSample(now time.Duration) time.Duration {
 		if d < minWait {
 			d = minWait
 		}
+		start := time.Now()
 		time.Sleep(d)
 		m.mu.Lock()
-		m.tSleep += d
+		m.tSleep += time.Since(start)
 		now = m.update(0)
 	}
 	return now

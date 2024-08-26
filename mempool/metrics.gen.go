@@ -64,6 +64,12 @@ func PrometheusMetrics(namespace string, labelsAndValues ...string) *Metrics {
 			Name:      "active_outbound_connections",
 			Help:      "Number of connections being actively used for gossiping transactions (experimental feature).",
 		}, labels).With(labelsAndValues...),
+		RecheckDelay: prometheus.NewGaugeFrom(stdprometheus.GaugeOpts{
+			Namespace: namespace,
+			Subsystem: MetricsSubsystem,
+			Name:      "recheck_delay",
+			Help:      "Cumulative time spent rechecking transactions",
+		}, labels).With(labelsAndValues...),
 	}
 }
 
@@ -77,5 +83,6 @@ func NopMetrics() *Metrics {
 		RecheckTimes:              discard.NewCounter(),
 		AlreadyReceivedTxs:        discard.NewCounter(),
 		ActiveOutboundConnections: discard.NewGauge(),
+		RecheckDelay:              discard.NewGauge(),
 	}
 }
