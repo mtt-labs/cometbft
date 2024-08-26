@@ -38,10 +38,9 @@ func CreateRandomPeer(outbound bool) Peer {
 			outbound:   outbound,
 			socketAddr: netAddr,
 		},
-		nodeInfo:       mockNodeInfo{netAddr},
-		mconn:          &conn.MConnection{},
-		metrics:        NopMetrics(),
-		pendingMetrics: newPeerPendingMetricsCache(),
+		nodeInfo: mockNodeInfo{netAddr},
+		mconn:    &conn.MConnection{},
+		metrics:  NopMetrics(),
 	}
 	p.SetLogger(log.TestingLogger().With("peer", addr))
 	return p

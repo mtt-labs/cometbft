@@ -38,18 +38,6 @@ func PrometheusMetrics(namespace string, labelsAndValues ...string) *Metrics {
 			Name:      "message_send_bytes_total",
 			Help:      "Number of bytes of each message type sent.",
 		}, append(labels, "message_type")).With(labelsAndValues...),
-		MessageAverageSendDelay: prometheus.NewGaugeFrom(stdprometheus.GaugeOpts{
-			Namespace: namespace,
-			Subsystem: MetricsSubsystem,
-			Name:      "message_average_send_delay",
-			Help:      "Average delay for sending messages to a peer in a channel.",
-		}, append(labels, "peer_id", "channel_id")).With(labelsAndValues...),
-		MessageSendDelay: prometheus.NewGaugeFrom(stdprometheus.GaugeOpts{
-			Namespace: namespace,
-			Subsystem: MetricsSubsystem,
-			Name:      "message_send_delay",
-			Help:      "Delay for send a message to a peer in a channel.",
-		}, append(labels, "peer_id", "channel_id")).With(labelsAndValues...),
 		RateLimiterDelayMs: prometheus.NewCounterFrom(stdprometheus.CounterOpts{
 			Namespace: namespace,
 			Subsystem: MetricsSubsystem,
@@ -65,8 +53,6 @@ func NopMetrics() *Metrics {
 		PeerPendingSendBytes:     discard.NewGauge(),
 		MessageReceiveBytesTotal: discard.NewCounter(),
 		MessageSendBytesTotal:    discard.NewCounter(),
-		MessageAverageSendDelay:  discard.NewGauge(),
-		MessageSendDelay:         discard.NewGauge(),
 		RateLimiterDelayMs:       discard.NewCounter(),
 	}
 }

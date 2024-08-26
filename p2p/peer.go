@@ -13,7 +13,6 @@ import (
 	"github.com/cometbft/cometbft/libs/service"
 	cmtconn "github.com/cometbft/cometbft/p2p/conn"
 	"github.com/cometbft/cometbft/types"
-	cmttime "github.com/cometbft/cometbft/types/time"
 )
 
 //go:generate ../scripts/mockery_generate.sh Peer
@@ -269,7 +268,6 @@ func (p *peer) TrySend(e Envelope) bool {
 }
 
 func (p *peer) send(chID byte, msg proto.Message, sendFunc func(byte, []byte) bool) bool {
-	start := cmttime.Now()
 	if !p.IsRunning() {
 		return false
 	} else if !p.HasChannel(chID) {
@@ -285,24 +283,9 @@ func (p *peer) send(chID byte, msg proto.Message, sendFunc func(byte, []byte) bo
 		return false
 	}
 	res := sendFunc(chID, msgBytes)
-	duration := cmttime.Since(start)
 	if res {
 		p.pendingMetrics.AddPendingSendBytes(msgType, len(msgBytes))
-	} else if duration < 10*time.Second {
-		// 10 seconds is the maximum sending delay for the Send()
-		// method. TrySend() can return faster, but we then use 10s.
-		duration = 10 * time.Second
 	}
-
-	// We are using two metrics here, to decide which provides best insights.
-	// The first caches the duration for multiple messages, producing an
-	// average of the sending delay over an interval (1s by default).
-	// The second just sets the latest observed sending delay, a snapshot.
-	p.pendingMetrics.AddPendingMessageSendDelay(chID, duration)
-	p.metrics.MessageSendDelay.
-		With("peer_id", string(p.ID())).
-		With("channel_id", string(chID)).
-		Set(duration.Seconds())
 	return res
 }
 
@@ -408,18 +391,6 @@ func (p *peer) metricsReporter() {
 							Add(float64(entry.pendingRecvBytes))
 						entry.pendingRecvBytes = 0
 					}
-				}
-				for chID, entry := range p.pendingMetrics.perChannelCache {
-					value := 0.
-					if entry.count > 0 {
-						value = entry.sendDelay.Seconds() / float64(entry.count)
-						entry.count = 0
-						entry.sendDelay = 0
-					}
-					p.metrics.MessageAverageSendDelay.
-						With("peer_id", string(p.ID())).
-						With("channel_id", string(chID)).
-						Set(value)
 				}
 			}()
 
