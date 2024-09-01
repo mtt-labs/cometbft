@@ -46,7 +46,7 @@ require (
 
 require (
 	github.com/Masterminds/semver/v3 v3.2.1
-	github.com/btcsuite/btcd/btcec/v2 v2.2.2
+	github.com/btcsuite/btcd/btcec/v2 v2.3.4
 	github.com/btcsuite/btcd/btcutil v1.1.6
 	github.com/cometbft/cometbft-db v0.9.4
 	github.com/cometbft/cometbft-load-test v0.2.0
