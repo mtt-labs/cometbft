@@ -88,7 +88,7 @@ func validateBlock(state State, block *types.Block) error {
 			return errors.New("initial block can't have LastCommit signatures")
 		}
 	} else {
-		if !(state.LastBlockHeight == 2673531 || state.LastBlockHeight == 2673532) {
+		if !(state.LastBlockHeight == 2673530 || state.LastBlockHeight == 2673531) {
 			// LastCommit.Signatures length is checked in VerifyCommit.
 			if err := state.LastValidators.VerifyCommit(
 				state.ChainID, state.LastBlockID, block.Height-1, block.LastCommit); err != nil {

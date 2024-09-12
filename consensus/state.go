@@ -573,7 +573,7 @@ func (cs *State) reconstructLastCommit(state sm.State) {
 		))
 	}
 	chainid := state.ChainID
-	if state.LastBlockHeight == 2673532 {
+	if state.LastBlockHeight == 2673531 {
 		chainid = "mtt_6118-1"
 	}
 	lastPrecommits := types.CommitToVoteSet(chainid, seenCommit, state.LastValidators)

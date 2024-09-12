@@ -910,7 +910,7 @@ func NewNodeWithContext(ctx context.Context,
 		stateSync = false
 	}
 
-	if state.LastBlockHeight == 2673531 {
+	if state.LastBlockHeight == 2673530 {
 		state.ChainID = "mtt_6880-1"
 	}
 
@@ -1561,7 +1561,7 @@ func LoadStateFromDBOrGenesisDocProvider(
 	if err != nil {
 		return sm.State{}, nil, err
 	}
-	if state.LastBlockHeight == 2673531 {
+	if state.LastBlockHeight == 2673530 {
 		genDoc.ChainID = "mtt_6880-1"
 		if err := saveGenesisDoc(stateDB, genDoc); err != nil {
 			return sm.State{}, nil, err
