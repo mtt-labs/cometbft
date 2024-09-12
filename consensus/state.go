@@ -572,8 +572,11 @@ func (cs *State) reconstructLastCommit(state sm.State) {
 			state.LastBlockHeight,
 		))
 	}
-
-	lastPrecommits := types.CommitToVoteSet(state.ChainID, seenCommit, state.LastValidators)
+	chainid := state.ChainID
+	if state.LastBlockHeight == 2673532 {
+		chainid = "mtt_6118-1"
+	}
+	lastPrecommits := types.CommitToVoteSet(chainid, seenCommit, state.LastValidators)
 	if !lastPrecommits.HasTwoThirdsMajority() {
 		panic("failed to reconstruct last commit; does not have +2/3 maj")
 	}

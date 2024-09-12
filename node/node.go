@@ -910,6 +910,10 @@ func NewNodeWithContext(ctx context.Context,
 		stateSync = false
 	}
 
+	if state.LastBlockHeight == 2673531 {
+		state.ChainID = "mtt_6880-1"
+	}
+
 	// Create the handshaker, which calls RequestInfo, sets the AppVersion on the state,
 	// and replays any blocks as necessary to sync CometBFT with the app.
 	consensusLogger := logger.With("module", "consensus")
@@ -1556,6 +1560,12 @@ func LoadStateFromDBOrGenesisDocProvider(
 	state, err := stateStore.LoadFromDBOrGenesisDoc(genDoc)
 	if err != nil {
 		return sm.State{}, nil, err
+	}
+	if state.LastBlockHeight == 2673531 {
+		genDoc.ChainID = "mtt_6880-1"
+		if err := saveGenesisDoc(stateDB, genDoc); err != nil {
+			return sm.State{}, nil, err
+		}
 	}
 	return state, genDoc, nil
 }
